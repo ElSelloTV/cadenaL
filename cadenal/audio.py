@@ -163,7 +163,8 @@ def ensure_virtual_sink(name: str, description: str) -> int:
         return existing.index
 
     log.info("Creando sink virtual '%s'", name)
-    props = f'sink_name={name} sink_properties=device.description="{description}"'
+    escaped_description = description.replace(" ", "\\ ")
+    props = f'sink_name={name} sink_properties=device.description="{escaped_description}"'
     try:
         _call("module_load", "module-null-sink", props)
     except (OperationTimedOut, pulsectl.PulseError) as exc:
