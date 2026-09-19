@@ -120,6 +120,15 @@ estandar, etc.). Puntos a confirmar con el equipo del software:
    frecuencia o formato distinto al del sink virtual, el servidor de
    audio resamplea automaticamente (es su comportamiento estandar para
    cualquier sink); no requiere ninguna configuracion adicional.
+7. **Si el software ya tiene su propio mecanismo de enrutado de audio
+   (por ejemplo `EnrutadorPactl` en RadioLinuxMadariaga), ese mecanismo
+   tiene que dejar de mover streams a mano mientras cadenaL este
+   activo**, y la salida del motor de audio debe quedar en
+   "predeterminado del sistema" (nunca apuntando a un sink por nombre).
+   Dos programas moviendo el mismo stream a destinos distintos compiten
+   entre si sin fin. Ver la seccion completa mas abajo,
+   "Uso compuesto: cadenaL junto a otro enrutador propio", que incluye
+   una deteccion automatica de este caso.
 
 ### Limitaciones conocidas (a tener en cuenta, no bloqueantes para uso en radio)
 
@@ -336,7 +345,7 @@ Si no pasaste `--target`, el resultado queda expuesto como el sink
 `qpwgraph` (por ejemplo, apuntandolo hacia tu tarjeta de sonido o hacia
 el software que alimenta el transmisor).
 
-### Afinar los parametros
+### Afinar los parametros (y que el ajuste sobreviva al reinicio diario)
 
 La cadena se instala con los valores por defecto de cada plugin (no
 son necesariamente los de tu configuracion de Breakaway). Para ajustar
@@ -351,12 +360,86 @@ sudo apt install carla
 y desde ahi mover los controles de cada plugin (Autogain, Compressor,
 Equalizer 5 Band, Limiter) escuchando el resultado en vivo.
 
+**Importante para un equipo con reinicio automatico diario:** un
+ajuste hecho asi, a mano, vive solo en la instancia de PipeWire que
+esta corriendo en ese momento — se pierde en el proximo reinicio (por
+ejemplo el reinicio automatico a las 5am de RadioLinuxMadariaga) porque
+la cadena vuelve a arrancar desde el snippet en disco, que hasta ahora
+solo tenia los valores de fabrica. Para que el ajuste quede fijo:
+
+```bash
+cadenal fx save     # lee los valores actuales de cada plugin y los guarda
+cadenal fx setup    # reescribe el snippet incluyendo esos valores guardados
+systemctl --user restart pipewire pipewire-pulse wireplumber
+```
+
+De ahi en mas, cada vez que PipeWire arranque (incluido el reinicio
+diario automatico) va a leer el mismo snippet con los valores ya
+adentro, en vez de los valores de fabrica. Repetir estos tres pasos
+cada vez que se vuelva a afinar algo a mano.
+
+`cadenal fx save` depende de `pw-dump` (viene con PipeWire) para leer
+los valores en vivo; la forma exacta en que cada version de PipeWire
+expone esos controles puede variar, asi que es un mecanismo best-effort:
+si no logra encontrar los controles de algun plugin lo va a decir
+explicitamente y va a dejar un volcado de diagnostico en
+`~/.config/cadenal/fx-controls-debug.json` para poder ajustar la
+deteccion con ese dato real en la mano.
+
 ### Quitar la cadena
 
 ```bash
 cadenal fx remove
 systemctl --user restart pipewire pipewire-pulse wireplumber
 ```
+
+## Uso compuesto: cadenaL junto a otro enrutador propio
+
+Si el software de radio ya trae su propio mecanismo de enrutado de
+audio (por ejemplo `EnrutadorPactl` en RadioLinuxMadariaga, que tambien
+mueve streams a mano con `pactl`/`pulsectl`), **los dos van a competir
+por el mismo stream** si ambos intentan decidir a que sink va: cada uno
+lo va a mover para su lado, en un loop sin fin.
+
+**Regla para evitar el conflicto:** si vas a usar cadenaL, el otro
+programa tiene que dejar de enrutar el manualmente. Concretamente, su
+salida de audio (la del motor que reproduce, ej. python-vlc/libVLC)
+tiene que quedar en el dispositivo **"predeterminado del sistema"**
+(nunca apuntando a mano a un nombre de sink especifico, ni siquiera al
+`cadenal_mix`). De esa forma el proceso de radio simplemente reproduce,
+y es *siempre* cadenaL -y solo cadenaL- quien decide a donde va cada
+stream. El propio mecanismo de enrutado del software de radio deberia
+quedar deshabilitado o en modo "no-op" mientras cadenaL este activo.
+
+### Deteccion automatica de conflicto
+
+El daemon lleva un historial corto por cada stream: si un mismo
+sink-input se mueve 4 o mas veces en 5 segundos, es una señal fuerte de
+que **otro proceso tambien lo esta moviendo** (nadie mueve su propio
+audio esa cantidad de veces por si solo). Cuando pasa, cadenaL lo deja
+registrado como advertencia en el log del servicio en vez de seguir en
+silencio:
+
+```
+El stream 123 se movio 4 veces en 5s. Esto suele indicar que OTRO
+programa (ej. un enrutador propio del software de radio) tambien esta
+moviendo el mismo audio. [...]
+```
+
+### `cadenal doctor`
+
+Chequeo de salud de un solo comando: si el servicio esta activo, si el
+servidor de audio responde, si el sink virtual existe, si hay streams
+sin enrutar, si la cadena `fx` esta completa, y si aparecio alguna
+advertencia de conflicto en la ultima hora de log:
+
+```bash
+cadenal doctor
+```
+
+Es el primer comando a correr si algo "no suena bien": junta en un solo
+lugar las señales que en produccion (RadioLinuxMadariaga) costo mas
+tiempo diagnosticar a mano.
 
 ## Notas de diseno
 
@@ -369,7 +452,26 @@ systemctl --user restart pipewire pipewire-pulse wireplumber
 - Si se corta la conexion con el servidor de audio, el daemon reintenta
   la conexion con backoff creciente; `systemd` ademas lo reinicia si el
   proceso llegara a morir.
+- **Timeout duro en cada llamada al servidor de audio (`audio.py`).**
+  En produccion (RadioLinuxMadariaga) se dio el caso de que PipeWire
+  quedara colgado/degradado -ni un `pactl` corrido a mano respondia, y
+  eso colgaba tambien la barra de tareas del escritorio-. `pulsectl` no
+  expone timeout por-llamada en su API, asi que cadenaL corre cada
+  operacion (`sink_list`, `sink_input_move`, `module_load`, etc.) en un
+  hilo aparte con un limite de 3 segundos: si no vuelve a tiempo, se la
+  trata como "no se pudo esta vez" y el daemon sigue con el proximo
+  evento. Nunca se queda esperando indefinidamente una respuesta que
+  puede no llegar.
+- **Manejo de errores amplio en el loop de eventos (`daemon.py`).** El
+  callback de eventos atrapa cualquier excepcion inesperada (no solo
+  las esperables de `pulsectl`), la loguea completa con
+  `log.exception`, y sigue escuchando el proximo evento sin forzar una
+  reconexion completa (que implicaria cortar y re-barrer todos los
+  streams sin necesidad, por un error que puede ser puntual de un solo
+  stream).
 - `cadenal fx` genera la configuracion de PipeWire pero no fue probado
   todavia contra una instalacion real (se desarrollo sin acceso a un
   entorno Linux). `cadenal fx check` sirve para detectar temprano si
-  falta algun paquete antes de instalar la cadena.
+  falta algun paquete antes de instalar la cadena, y `cadenal fx save`
+  deja un volcado de diagnostico si no logra leer los controles en vivo
+  (ver seccion de `fx` mas arriba).

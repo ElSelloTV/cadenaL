@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
+import subprocess
 import sys
+from typing import List
 
 import pulsectl
 
-from . import audio, fx
+from . import audio, fx, service
 from .config import CONFIG_PATH, Config
 from .daemon import CadenalDaemon
 
@@ -127,9 +130,12 @@ def _cmd_fx_check(args: argparse.Namespace) -> int:
 
 def _cmd_fx_setup(args: argparse.Namespace) -> int:
     cfg = Config.load()
-    target = args.target
-    if target:
-        cfg.fx_target_sink = target
+    # si no se paso --target, reusamos el que ya estaba guardado (asi
+    # 'cadenal fx setup' sin argumentos sirve para re-generar/recargar
+    # el snippet, por ejemplo despues de un 'cadenal fx save').
+    target = args.target or cfg.fx_target_sink
+    if args.target:
+        cfg.fx_target_sink = args.target
         cfg.save()
 
     path = fx.install_snippet(source_sink=cfg.sink_name, target_sink=target)
@@ -148,20 +154,64 @@ def _cmd_fx_setup(args: argparse.Namespace) -> int:
         "un instante en toda la maquina):\n"
         "  systemctl --user restart pipewire pipewire-pulse wireplumber\n"
     )
-    print("Los parametros de cada plugin quedan en sus valores por defecto.")
+    if fx.controls_path().exists():
+        print(
+            "Se aplicaron los valores guardados con 'cadenal fx save' "
+            f"({fx.controls_path()})."
+        )
+    else:
+        print("Los parametros de cada plugin quedan en sus valores por defecto.")
     print(
         "Para afinarlos (compresion, ganancia, agudos, etc.) usa una herramienta "
         "con interfaz grafica para plugins LV2 como 'carla' o 'qpwgraph', "
-        "apuntando al nodo 'CadenaL FX'."
+        "apuntando al nodo 'CadenaL FX'. Despues de ajustar, corre "
+        "'cadenal fx save' y volve a correr 'cadenal fx setup' para que el "
+        "ajuste quede guardado y sobreviva al proximo reinicio."
     )
     return 0
+
+
+def _cmd_fx_save(args: argparse.Namespace) -> int:
+    try:
+        controls = fx.save_controls()
+    except RuntimeError as exc:
+        print(f"No se pudieron guardar los valores: {exc}")
+        return 1
+
+    found = [role for role in fx.ROLE_ORDER if controls.get(role)]
+    missing = [role for role in fx.ROLE_ORDER if role not in found]
+
+    print(f"Valores guardados en: {fx.controls_path()}")
+    if found:
+        print(f"Se encontraron controles para: {', '.join(found)}")
+    if missing:
+        print(f"No se encontraron controles para: {', '.join(missing)}")
+        print(
+            "(puede que la cadena fx no este corriendo en este momento, o que "
+            "esta version de PipeWire exponga los nombres de otra forma). "
+            f"Se guardo un volcado de diagnostico en {fx.debug_dump_path()} "
+            "por si hace falta ajustar la deteccion."
+        )
+
+    print(
+        "\nPara que estos valores queden aplicados de forma persistente "
+        "(incluso despues de reiniciar la PC), corre:\n"
+        "  cadenal fx setup\n"
+        "  systemctl --user restart pipewire pipewire-pulse wireplumber"
+    )
+    return 0 if found else 1
 
 
 def _cmd_fx_status(args: argparse.Namespace) -> int:
     if not fx.is_snippet_installed():
         print("La cadena fx no esta instalada. Corre 'cadenal fx setup'.")
         return 1
-    print(f"Snippet instalado en: {fx.snippet_path()}\n")
+    print(f"Snippet instalado en: {fx.snippet_path()}")
+    if fx.controls_path().exists():
+        print(f"Valores guardados en uso: {fx.controls_path()}")
+    else:
+        print("Sin valores guardados: la cadena usa los valores de fabrica de cada plugin.")
+    print()
     print(audio.status_report(fx.FX_SINK_NAME))
     return 0
 
@@ -181,6 +231,113 @@ def _cmd_fx_remove(args: argparse.Namespace) -> int:
 
 def _cmd_fx(args: argparse.Namespace) -> int:
     return args.fx_func(args)
+
+
+def _recent_conflict_warnings() -> List[str]:
+    """Busca en el log reciente del servicio avisos de posible enrutado
+    en conflicto con otro programa (ver daemon.py)."""
+    if shutil.which("journalctl") is None:
+        return []
+    try:
+        out = subprocess.run(
+            [
+                "journalctl", "--user", "-u", "cadenal.service",
+                "--since", "-1 hour", "--no-pager",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.SubprocessError:
+        return []
+    return [line for line in out.stdout.splitlines() if "OTRO programa" in line]
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    cfg = Config.load()
+    ok = True
+    print("=== cadenaL doctor ===\n")
+
+    try:
+        active = service.is_active()
+    except (OSError, FileNotFoundError):
+        active = None
+    if active is True:
+        print("[OK] cadenal.service esta activo.")
+    elif active is False:
+        print("[AVISO] cadenal.service no esta activo (systemctl --user start cadenal.service).")
+        ok = False
+    else:
+        print("[?] No se pudo consultar systemctl --user en este sistema.")
+
+    try:
+        with pulsectl.Pulse("cadenal-doctor") as pulse:
+            audio.list_physical_sinks(pulse)  # ya tiene timeout interno
+        print("[OK] El servidor de audio (PulseAudio/PipeWire) responde.")
+        server_ok = True
+    except pulsectl.PulseError as exc:
+        print(f"[FALTA] No se pudo conectar al servidor de audio: {exc}")
+        server_ok = False
+        ok = False
+
+    if server_ok:
+        with pulsectl.Pulse("cadenal-doctor") as pulse:
+            sink = audio.find_sink_by_name(pulse, cfg.sink_name)
+            all_inputs = audio.sink_input_list_safe(pulse)
+
+        if sink is not None:
+            print(f"[OK] Sink virtual '{cfg.sink_name}' existe (index {sink.index}).")
+        else:
+            print(f"[AVISO] El sink virtual '{cfg.sink_name}' todavia no existe.")
+            ok = False
+
+        if sink is not None and all_inputs:
+            with pulsectl.Pulse("cadenal-doctor") as pulse:
+                unrouted = [
+                    si
+                    for si in all_inputs
+                    if si.sink != sink.index
+                    and audio.application_name(si) not in cfg.exclude_apps
+                    and audio.sink_name_by_index(pulse, si.sink) not in cfg.exclude_sink_targets
+                ]
+            if unrouted:
+                print(
+                    f"[AVISO] Hay {len(unrouted)} stream(s) sin enrutar al mix "
+                    "(corre 'cadenal status' para el detalle)."
+                )
+                ok = False
+            else:
+                print("[OK] Todos los streams relevantes estan enrutados al mix.")
+
+    fx_report = fx.check_plugins()
+    fx_missing = [role for role, info in fx_report.items() if info["found"] is False]
+    if fx.is_snippet_installed():
+        if fx_missing:
+            print(f"[AVISO] Cadena fx instalada pero faltan plugins: {', '.join(fx_missing)}")
+            ok = False
+        else:
+            print("[OK] Cadena fx instalada y plugins presentes.")
+    else:
+        print("[INFO] Cadena fx no instalada (opcional, 'cadenal fx setup' para instalarla).")
+
+    conflicts = _recent_conflict_warnings()
+    if conflicts:
+        print(f"\n[AVISO] Posible conflicto de enrutado detectado en la ultima hora:")
+        for line in conflicts[-5:]:
+            print(f"    {line}")
+        print(
+            "\n  Esto pasa cuando otro programa (por ejemplo un enrutador propio "
+            "del software de radio) tambien mueve el mismo stream. Ese programa "
+            "debe dejar su salida en 'predeterminado del sistema' y nunca "
+            "apuntar a un sink especifico por nombre, para que sea siempre "
+            "cadenaL quien decida el enrutamiento (ver seccion 'Uso compuesto' "
+            "del README)."
+        )
+        ok = False
+
+    print()
+    print("Todo OK." if ok else "Hay puntos para revisar (ver arriba).")
+    return 0 if ok else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -223,6 +380,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp_start = sub.add_parser("start", help="Inicia el daemon en primer plano")
     sp_start.set_defaults(func=_cmd_start)
 
+    sp_doctor = sub.add_parser(
+        "doctor", help="Chequeo de salud: servicio, servidor de audio, fx, posibles conflictos"
+    )
+    sp_doctor.set_defaults(func=_cmd_doctor)
+
     sp_fx = sub.add_parser(
         "fx", help="Procesador de audio ultra-liviano (autoganancia/compresor/brillo/limitador)"
     )
@@ -238,6 +400,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Nombre del sink fisico donde enviar la salida ya procesada (opcional)",
     )
     fx_setup.set_defaults(fx_func=_cmd_fx_setup)
+
+    fx_save = fx_sub.add_parser(
+        "save",
+        help="Guarda los valores actuales de cada plugin (para que sobrevivan al reinicio)",
+    )
+    fx_save.set_defaults(fx_func=_cmd_fx_save)
 
     fx_status = fx_sub.add_parser("status", help="Muestra el estado de la cadena de procesamiento")
     fx_status.set_defaults(fx_func=_cmd_fx_status)

@@ -24,11 +24,23 @@ log = logging.getLogger("cadenal.daemon")
 
 _RECONNECT_BACKOFF = (1, 2, 5, 10, 30)
 
+# Deteccion de conflicto: si un mismo sink-input se mueve mas de
+# _CONFLICT_THRESHOLD veces en _CONFLICT_WINDOW segundos, es señal de
+# que otro proceso (tipicamente un enrutador propio del software de
+# radio) tambien esta moviendolo, y esta "peleando" con cadenaL por el
+# mismo stream. Ver seccion "Uso compuesto" del README.
+_CONFLICT_WINDOW = 5.0
+_CONFLICT_THRESHOLD = 4
+_CONFLICT_LOG_COOLDOWN = 30.0
+
 
 class CadenalDaemon:
     def __init__(self, config: Config):
         self.config = config
         self.target_index: int | None = None
+        # por indice de sink-input: timestamps recientes en que se lo movio
+        self._recent_moves: dict[int, list[float]] = {}
+        self._conflict_last_logged: dict[int, float] = {}
 
     def _should_ignore(self, pulse: pulsectl.Pulse, sink_input) -> bool:
         name = audio.application_name(sink_input)
@@ -40,13 +52,44 @@ class CadenalDaemon:
                 return True
         return False
 
+    def _forget(self, index: int) -> None:
+        self._recent_moves.pop(index, None)
+        self._conflict_last_logged.pop(index, None)
+
+    def _note_move_and_check_conflict(self, index: int) -> None:
+        now = time.monotonic()
+        history = self._recent_moves.setdefault(index, [])
+        history.append(now)
+        cutoff = now - _CONFLICT_WINDOW
+        while history and history[0] < cutoff:
+            history.pop(0)
+
+        if len(history) < _CONFLICT_THRESHOLD:
+            return
+        last_logged = self._conflict_last_logged.get(index, 0.0)
+        if now - last_logged < _CONFLICT_LOG_COOLDOWN:
+            return
+        self._conflict_last_logged[index] = now
+        log.warning(
+            "El stream %s se movio %d veces en %.0fs. Esto suele indicar que "
+            "OTRO programa (ej. un enrutador propio del software de radio) "
+            "tambien esta moviendo el mismo audio. Para usar cadenaL junto a "
+            "otro mecanismo de enrutado, ese programa debe dejar su salida en "
+            "'predeterminado del sistema' y nunca apuntar a un sink especifico "
+            "por nombre (ver seccion 'Uso compuesto' del README).",
+            index,
+            len(history),
+            _CONFLICT_WINDOW,
+        )
+
     def _sweep_existing(self, pulse: pulsectl.Pulse) -> None:
         """Al arrancar (o reconectar), mueve todo lo que ya esta sonando."""
-        for si in pulse.sink_input_list():
+        for si in audio.sink_input_list_safe(pulse):
             if si.sink == self.target_index:
                 continue
             if self._should_ignore(pulse, si):
                 continue
+            self._note_move_and_check_conflict(si.index)
             audio.move_sink_input(pulse, si.index, self.target_index)
 
     def _handle_event(self, pulse: pulsectl.Pulse, ev) -> None:
@@ -60,6 +103,12 @@ class CadenalDaemon:
 
         if ev.facility != "sink_input":
             return
+
+        if ev.t == "remove":
+            # limpiamos el historial de conflicto: este stream ya no existe
+            self._forget(ev.index)
+            return
+
         if ev.t not in ("new", "change"):
             return
 
@@ -71,6 +120,7 @@ class CadenalDaemon:
         if self._should_ignore(pulse, si):
             return
 
+        self._note_move_and_check_conflict(si.index)
         audio.move_sink_input(pulse, si.index, self.target_index)
 
     def run_once(self) -> None:
@@ -91,8 +141,16 @@ class CadenalDaemon:
             def _cb(ev):
                 try:
                     self._handle_event(pulse, ev)
-                except pulsectl.PulseOperationFailed as exc:
-                    log.warning("Error manejando evento %s: %s", ev, exc)
+                except Exception:
+                    # Cualquier excepcion inesperada (no solo las de pulsectl)
+                    # se loguea completa y se sigue con el proximo evento, en
+                    # vez de tirar abajo toda la conexion: eso forzaria un
+                    # reconnect + re-barrido de todos los streams sin
+                    # necesidad, por un error que puede ser puntual de un
+                    # solo stream.
+                    log.exception(
+                        "Error inesperado manejando el evento %s; se ignora y se sigue", ev
+                    )
                 raise pulsectl.PulseLoopStop
 
             pulse.event_callback_set(_cb)
@@ -105,7 +163,7 @@ class CadenalDaemon:
         while True:
             try:
                 self.run_once()
-            except (pulsectl.PulseError, OSError) as exc:
+            except (pulsectl.PulseError, OSError, RuntimeError) as exc:
                 delay = _RECONNECT_BACKOFF[min(attempt, len(_RECONNECT_BACKOFF) - 1)]
                 log.error(
                     "Se perdio la conexion con el servidor de audio (%s). "
