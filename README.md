@@ -36,24 +36,56 @@ casos se habla el protocolo de PulseAudio.
   escritorio no los tiene, el icono cae solo a un modo compatible por
   X11 (necesita `python3-xlib`, que se instala solo via pip).
 
-## Instalacion
+## Instalacion completa (recomendado)
+
+Un solo script instala todo lo que se puede automatizar: paquetes del
+sistema (incluyendo los del procesador `fx`: PipeWire, Calf, LSP,
+lv2-utils), la app (`cadenal`, `cadenal-gui`, `cadenal-tray`), el
+servicio systemd, y los iconos de menu/bandeja.
 
 ```bash
-sudo apt install python3-pip python3-tk pipewire-pulse \
-    python3-gi gir1.2-ayatanaappindicator3-0.1   # si no los tenes ya
+chmod +x install.sh
+./install.sh
+```
+
+Te va a pedir la contrasena de `sudo` para los paquetes de `apt`. Al
+final del todo te muestra los pasos que quedan pendientes porque
+dependen de tu hardware especifico (nombres de tus salidas de audio):
+`cadenal scan`, `cadenal setup`, `cadenal fx setup --target ...`, etc.
+Es seguro volver a correr `./install.sh` mas de una vez.
+
+### Instalacion manual (paso a paso)
+
+Si preferis hacerlo a mano o algo del script no te sirve para tu caso:
+
+```bash
+sudo apt install python3-pip python3-tk pipewire pipewire-pulse \
+    python3-gi gir1.2-ayatanaappindicator3-0.1 \
+    lv2-utils calf-plugins lsp-plugins-lv2   # si no los tenes ya
 pip install --user ".[tray]"
 ```
 
-(Si no te interesa el icono de bandeja, alcanza con `pip install --user .`)
+(Si no te interesa el icono de bandeja, alcanza con `pip install --user .`;
+si no vas a usar el procesador `fx`, podes omitir `lv2-utils calf-plugins
+lsp-plugins-lv2`)
 
 Esto instala en `~/.local/bin` (asegurate de que ese directorio este
 en tu `PATH`):
 
-- `cadenal` — CLI (`scan`, `setup`, `status`, `start`).
+- `cadenal` — CLI (`scan`, `setup`, `status`, `start`, `fx`).
 - `cadenal-gui` — ventana de configuracion.
 - `cadenal-tray` — icono de bandeja junto al reloj.
 
-### Icono en el menu de aplicaciones y en la bandeja
+Instalar el servicio persistente:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/cadenal.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable cadenal.service
+```
+
+Instalar el icono de menu y de bandeja:
 
 ```bash
 ./desktop/install-desktop-entry.sh
@@ -123,14 +155,11 @@ Por linea de comandos es el mismo flujo:
    demas (tipicamente el master, que apunta a tu consola USB) se
    enruta igual que siempre hacia `cadenal_mix`.
 
-3. Instalar y habilitar el servicio para que quede corriendo siempre
-   (incluso si PulseAudio/PipeWire se reinicia):
+3. Arrancar el servicio (si usaste `install.sh` ya quedo habilitado,
+   solo falta iniciarlo la primera vez):
 
    ```bash
-   mkdir -p ~/.config/systemd/user
-   cp systemd/cadenal.service ~/.config/systemd/user/
-   systemctl --user daemon-reload
-   systemctl --user enable --now cadenal.service
+   systemctl --user start cadenal.service
    ```
 
 4. Verificar el estado:
