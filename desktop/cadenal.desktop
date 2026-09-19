@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=cadenaL
+GenericName=Configuracion de enrutamiento de audio
+Comment=Enruta todo el audio de la maquina a una unica salida virtual
+Exec=cadenal-gui
+Icon=cadenal
+Terminal=false
+Categories=AudioVideo;Audio;Settings;
+StartupNotify=true

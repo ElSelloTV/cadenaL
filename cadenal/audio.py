@@ -92,3 +92,31 @@ def sink_input_info_safe(pulse: pulsectl.Pulse, index: int):
         return pulse.sink_input_info(index)
     except pulsectl.PulseIndexError:
         return None
+
+
+def status_report(sink_name: str) -> str:
+    """Genera el mismo texto de estado para CLI y GUI."""
+    lines: List[str] = []
+    with pulsectl.Pulse("cadenal-status") as pulse:
+        sink = find_sink_by_name(pulse, sink_name)
+        if sink is None:
+            lines.append(f"El sink virtual '{sink_name}' no existe todavia.")
+            lines.append("Corre 'cadenal setup' o inicia el servicio.")
+            return "\n".join(lines)
+
+        lines.append(f"Sink virtual: {sink.name} (index {sink.index})")
+        lines.append(f"Descripcion : {sink.description}")
+
+        streams = [si for si in pulse.sink_input_list() if si.sink == sink.index]
+        lines.append(f"\nStreams actualmente enrutados ahi: {len(streams)}")
+        for si in streams:
+            app = application_name(si) or "(desconocido)"
+            lines.append(f"  [{si.index}] {app}")
+
+        others = [si for si in pulse.sink_input_list() if si.sink != sink.index]
+        if others:
+            lines.append(f"\nStreams NO enrutados (deberian moverse solos en breve): {len(others)}")
+            for si in others:
+                app = application_name(si) or "(desconocido)"
+                lines.append(f"  [{si.index}] {app}")
+    return "\n".join(lines)

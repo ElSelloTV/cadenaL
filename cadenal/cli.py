@@ -56,28 +56,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
 def _cmd_status(args: argparse.Namespace) -> int:
     cfg = Config.load()
-    with pulsectl.Pulse("cadenal-status") as pulse:
-        sink = audio.find_sink_by_name(pulse, cfg.sink_name)
-        if sink is None:
-            print(f"El sink virtual '{cfg.sink_name}' no existe todavia.")
-            print("Corre 'cadenal setup' o inicia el servicio.")
-            return 1
-
-        print(f"Sink virtual: {sink.name} (index {sink.index})")
-        print(f"Descripcion : {sink.description}")
-
-        streams = [si for si in pulse.sink_input_list() if si.sink == sink.index]
-        print(f"\nStreams actualmente enrutados ahi: {len(streams)}")
-        for si in streams:
-            app = audio.application_name(si) or "(desconocido)"
-            print(f"  [{si.index}] {app}")
-
-        others = [si for si in pulse.sink_input_list() if si.sink != sink.index]
-        if others:
-            print(f"\nStreams NO enrutados (deberian moverse solos en breve): {len(others)}")
-            for si in others:
-                app = audio.application_name(si) or "(desconocido)"
-                print(f"  [{si.index}] {app}")
+    print(audio.status_report(cfg.sink_name))
     return 0
 
 

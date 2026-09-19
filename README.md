@@ -29,18 +29,42 @@ casos se habla el protocolo de PulseAudio.
 - Python 3.9+
 - Libreria `libpulse0` (normalmente ya instalada junto con el servidor
   de audio).
+- `python3-tk` si vas a usar la ventana de configuracion grafica.
 
 ## Instalacion
 
 ```bash
-sudo apt install python3-pip pipewire-pulse   # si no los tenes ya
+sudo apt install python3-pip python3-tk pipewire-pulse   # si no los tenes ya
 pip install --user .
 ```
 
-Esto instala el comando `cadenal` en `~/.local/bin/cadenal` (asegurate
-de que ese directorio este en tu `PATH`).
+Esto instala dos comandos en `~/.local/bin` (asegurate de que ese
+directorio este en tu `PATH`):
+
+- `cadenal` — CLI (`scan`, `setup`, `status`, `start`).
+- `cadenal-gui` — ventana de configuracion.
+
+### Icono en el menu de aplicaciones
+
+```bash
+./desktop/install-desktop-entry.sh
+```
+
+Esto copia el `.desktop` y el icono a las carpetas estandar de tu
+usuario (`~/.local/share/applications` y
+`~/.local/share/icons/hicolor/scalable/apps`). Deberia aparecer
+"cadenaL" en el menu de tu escritorio (Trinity/Plasma/lo que uses en
+Q4OS) para abrir la ventana de configuracion sin usar la terminal.
 
 ## Uso
+
+Los pasos 1 y 2 se pueden hacer desde la ventana grafica (`cadenal-gui`
+o el icono del menu) en vez de la terminal: escanea las salidas
+fisicas, define el nombre del sink virtual, permite excluir
+aplicaciones y tiene botones para habilitar/detener el servicio y ver
+que streams estan enrutados en cada momento.
+
+Por linea de comandos es el mismo flujo:
 
 1. Escanear las salidas fisicas actuales (informativo, queda guardado
    en la configuracion):

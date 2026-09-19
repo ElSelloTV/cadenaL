@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 cadenal = "cadenal.cli:main"
+cadenal-gui = "cadenal.gui:main"
 
 [tool.setuptools.packages.find]
 include = ["cadenal*"]
