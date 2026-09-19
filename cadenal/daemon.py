@@ -9,6 +9,17 @@ virtual de destino si todavia no esta ahi. Es el enfoque mas liviano
 posible: no hay polling, todo se resuelve por eventos del propio
 servidor de audio, y es agnostico a cuantas salidas fisicas o virtuales
 existan o se agreguen despues.
+
+IMPORTANTE: la conexion `pulse` que abre este modulo se usa
+EXCLUSIVAMENTE para event_mask_set/event_callback_set/event_listen.
+Nunca se le pide una operacion bloqueante (mover un stream, listar
+sinks, etc.) a esa misma conexion: pulsectl tiene un guard de
+reentrancia que lo prohibe y falla siempre con PulseError mientras esa
+conexion esta escuchando eventos (ver el docstring de event_listen:
+"Do not run any pulse operations from these callbacks"). Por eso todas
+las operaciones reales pasan por las funciones de audio.py, que abren
+su propia conexion nueva cada vez. Una version anterior de este archivo
+pasaba `pulse` a esas funciones y las hacia fallar siempre.
 """
 from __future__ import annotations
 
@@ -42,12 +53,12 @@ class CadenalDaemon:
         self._recent_moves: dict[int, list[float]] = {}
         self._conflict_last_logged: dict[int, float] = {}
 
-    def _should_ignore(self, pulse: pulsectl.Pulse, sink_input) -> bool:
+    def _should_ignore(self, sink_input) -> bool:
         name = audio.application_name(sink_input)
         if name in self.config.exclude_apps:
             return True
         if self.config.exclude_sink_targets:
-            current_sink_name = audio.sink_name_by_index(pulse, sink_input.sink)
+            current_sink_name = audio.sink_name_by_index(sink_input.sink)
             if current_sink_name in self.config.exclude_sink_targets:
                 return True
         return False
@@ -82,23 +93,23 @@ class CadenalDaemon:
             _CONFLICT_WINDOW,
         )
 
-    def _sweep_existing(self, pulse: pulsectl.Pulse) -> None:
+    def _sweep_existing(self) -> None:
         """Al arrancar (o reconectar), mueve todo lo que ya esta sonando."""
-        for si in audio.sink_input_list_safe(pulse):
+        for si in audio.sink_input_list_safe():
             if si.sink == self.target_index:
                 continue
-            if self._should_ignore(pulse, si):
+            if self._should_ignore(si):
                 continue
             self._note_move_and_check_conflict(si.index)
-            audio.move_sink_input(pulse, si.index, self.target_index)
+            audio.move_sink_input(si.index, self.target_index)
 
-    def _handle_event(self, pulse: pulsectl.Pulse, ev) -> None:
+    def _handle_event(self, ev) -> None:
         if ev.facility == "sink" and ev.t == "remove" and ev.index == self.target_index:
             log.warning("El sink virtual desaparecio (index %s); se recreara", ev.index)
             self.target_index = audio.ensure_virtual_sink(
-                pulse, self.config.sink_name, self.config.description
+                self.config.sink_name, self.config.description
             )
-            self._sweep_existing(pulse)
+            self._sweep_existing()
             return
 
         if ev.facility != "sink_input":
@@ -112,35 +123,37 @@ class CadenalDaemon:
         if ev.t not in ("new", "change"):
             return
 
-        si = audio.sink_input_info_safe(pulse, ev.index)
+        si = audio.sink_input_info_safe(ev.index)
         if si is None:
             return
         if si.sink == self.target_index:
             return
-        if self._should_ignore(pulse, si):
+        if self._should_ignore(si):
             return
 
         self._note_move_and_check_conflict(si.index)
-        audio.move_sink_input(pulse, si.index, self.target_index)
+        audio.move_sink_input(si.index, self.target_index)
 
     def run_once(self) -> None:
         """Una sesion de conexion; se sale si se cae la conexion con el servidor de audio."""
-        with pulsectl.Pulse("cadenal-daemon") as pulse:
-            self.target_index = audio.ensure_virtual_sink(
-                pulse, self.config.sink_name, self.config.description
-            )
-            log.info(
-                "Sink virtual '%s' listo (index %s). Escuchando streams...",
-                self.config.sink_name,
-                self.target_index,
-            )
-            self._sweep_existing(pulse)
+        self.target_index = audio.ensure_virtual_sink(
+            self.config.sink_name, self.config.description
+        )
+        log.info(
+            "Sink virtual '%s' listo (index %s). Escuchando streams...",
+            self.config.sink_name,
+            self.target_index,
+        )
+        self._sweep_existing()
 
+        # Esta conexion es solo para escuchar eventos: nunca se le pide
+        # ninguna operacion bloqueante (ver docstring del modulo).
+        with pulsectl.Pulse("cadenal-daemon-events") as pulse:
             pulse.event_mask_set("sink_input", "sink")
 
             def _cb(ev):
                 try:
-                    self._handle_event(pulse, ev)
+                    self._handle_event(ev)
                 except Exception:
                     # Cualquier excepcion inesperada (no solo las de pulsectl)
                     # se loguea completa y se sigue con el proximo evento, en

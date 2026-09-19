@@ -10,8 +10,6 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-import pulsectl
-
 from . import audio, service
 from .config import Config
 
@@ -119,12 +117,10 @@ class CadenalGUI(tk.Tk):
     # ---- acciones ----------------------------------------------------
     def _on_scan(self) -> None:
         self.list_physical.delete(0, "end")
-        try:
-            with pulsectl.Pulse("cadenal-gui-scan") as pulse:
-                sinks = audio.list_physical_sinks(pulse)
-        except pulsectl.PulseError as exc:
-            messagebox.showerror("cadenaL", f"No se pudo conectar al servidor de audio:\n{exc}")
+        if not audio.server_alive():
+            messagebox.showerror("cadenaL", "No se pudo conectar al servidor de audio.")
             return
+        sinks = audio.list_physical_sinks()
 
         if not sinks:
             self.list_physical.insert("end", "(no se detectaron salidas fisicas)")
@@ -154,9 +150,8 @@ class CadenalGUI(tk.Tk):
     def _on_apply(self) -> None:
         cfg = self._collect_config()
         try:
-            with pulsectl.Pulse("cadenal-gui-setup") as pulse:
-                index = audio.ensure_virtual_sink(pulse, cfg.sink_name, cfg.description)
-        except pulsectl.PulseError as exc:
+            index = audio.ensure_virtual_sink(cfg.sink_name, cfg.description)
+        except RuntimeError as exc:
             messagebox.showerror("cadenaL", f"No se pudo crear el sink virtual:\n{exc}")
             return
 
@@ -199,10 +194,7 @@ class CadenalGUI(tk.Tk):
     def _on_refresh_routing(self) -> None:
         cfg = self._collect_config()
         self.txt_status.delete("1.0", "end")
-        try:
-            report = audio.status_report(cfg.sink_name)
-        except pulsectl.PulseError as exc:
-            report = f"No se pudo conectar al servidor de audio:\n{exc}"
+        report = audio.status_report(cfg.sink_name)
         self.txt_status.insert("1.0", report)
 
 

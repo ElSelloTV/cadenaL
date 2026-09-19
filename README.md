@@ -452,6 +452,20 @@ tiempo diagnosticar a mano.
 - Si se corta la conexion con el servidor de audio, el daemon reintenta
   la conexion con backoff creciente; `systemd` ademas lo reinicia si el
   proceso llegara a morir.
+- **Cada operacion abre su propia conexion (`audio.py`), nunca la que
+  esta escuchando eventos.** Bug de fondo encontrado y verificado
+  contra un PulseAudio real: una conexion `pulsectl.Pulse()` que esta
+  corriendo `event_listen()` no admite NINGUNA operacion bloqueante
+  -ni siquiera desde otro hilo-, por un guard de reentrancia interno
+  de `pulsectl` (el propio docstring de `event_listen` lo advierte:
+  "Do not run any pulse operations from these callbacks"). Una version
+  anterior reusaba esa conexion desde el hilo del timeout, asi que
+  `_handle_event` jamas podia mover un stream nuevo -su funcion
+  principal-, solo funcionaba el barrido inicial. El fix: la conexion
+  del daemon (`daemon.py`) se usa exclusivamente para escuchar
+  eventos; cada llamada de `audio.py` abre y cierra su propia conexion
+  descartable. Hay una prueba de integracion contra un PulseAudio real
+  que reproduce este escenario exacto (ver "Desarrollo y pruebas").
 - **Timeout duro en cada llamada al servidor de audio (`audio.py`).**
   En produccion (RadioLinuxMadariaga) se dio el caso de que PipeWire
   quedara colgado/degradado -ni un `pactl` corrido a mano respondia, y
@@ -475,3 +489,24 @@ tiempo diagnosticar a mano.
   falta algun paquete antes de instalar la cadena, y `cadenal fx save`
   deja un volcado de diagnostico si no logra leer los controles en vivo
   (ver seccion de `fx` mas arriba).
+
+## Desarrollo y pruebas
+
+El enrutador base (`daemon.py` + `audio.py`) tiene una prueba de
+integracion real, sin mocks, que levanta un PulseAudio aislado,
+arranca el daemon contra el, dispara un stream de reproduccion real
+mientras el daemon ya esta escuchando eventos, y confirma que
+efectivamente lo mueve al sink virtual. Esto es a proposito: un bug de
+reentrancia (ver "Notas de diseno") paso desapercibido durante meses
+porque nada se habia corrido nunca contra un servidor de audio real
+disparando un evento real -solo compilaba y se leia bien-.
+
+```bash
+sudo apt install pulseaudio pulseaudio-utils
+python -m unittest discover -s tests -v
+```
+
+Se salta sola si `pulseaudio`/`pacat` no estan en el `PATH` (por
+ejemplo, en un entorno de desarrollo sin Linux). Corre un servidor
+PulseAudio propio en un `XDG_RUNTIME_DIR` temporal, aislado de
+cualquier sesion de audio real de la maquina, y lo apaga al terminar.

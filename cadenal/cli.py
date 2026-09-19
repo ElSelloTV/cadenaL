@@ -7,16 +7,13 @@ import subprocess
 import sys
 from typing import List
 
-import pulsectl
-
 from . import audio, fx, service
 from .config import CONFIG_PATH, Config
 from .daemon import CadenalDaemon
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
-    with pulsectl.Pulse("cadenal-scan") as pulse:
-        sinks = audio.list_physical_sinks(pulse)
+    sinks = audio.list_physical_sinks()
     if not sinks:
         print("No se detectaron salidas de audio fisicas.")
         return 1
@@ -44,9 +41,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     if args.exclude_sink:
         cfg.exclude_sink_targets = args.exclude_sink
 
-    with pulsectl.Pulse("cadenal-setup") as pulse:
-        index = audio.ensure_virtual_sink(pulse, cfg.sink_name, cfg.description)
-        print(f"Sink virtual '{cfg.sink_name}' listo (index {index}).")
+    index = audio.ensure_virtual_sink(cfg.sink_name, cfg.description)
+    print(f"Sink virtual '{cfg.sink_name}' listo (index {index}).")
 
     cfg.save()
     print(f"Configuracion guardada en {CONFIG_PATH}.")
@@ -270,20 +266,17 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     else:
         print("[?] No se pudo consultar systemctl --user en este sistema.")
 
-    try:
-        with pulsectl.Pulse("cadenal-doctor") as pulse:
-            audio.list_physical_sinks(pulse)  # ya tiene timeout interno
+    if audio.server_alive():
         print("[OK] El servidor de audio (PulseAudio/PipeWire) responde.")
         server_ok = True
-    except pulsectl.PulseError as exc:
-        print(f"[FALTA] No se pudo conectar al servidor de audio: {exc}")
+    else:
+        print("[FALTA] No se pudo conectar al servidor de audio (o no respondio a tiempo).")
         server_ok = False
         ok = False
 
     if server_ok:
-        with pulsectl.Pulse("cadenal-doctor") as pulse:
-            sink = audio.find_sink_by_name(pulse, cfg.sink_name)
-            all_inputs = audio.sink_input_list_safe(pulse)
+        sink = audio.find_sink_by_name(cfg.sink_name)
+        all_inputs = audio.sink_input_list_safe()
 
         if sink is not None:
             print(f"[OK] Sink virtual '{cfg.sink_name}' existe (index {sink.index}).")
@@ -292,14 +285,13 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             ok = False
 
         if sink is not None and all_inputs:
-            with pulsectl.Pulse("cadenal-doctor") as pulse:
-                unrouted = [
-                    si
-                    for si in all_inputs
-                    if si.sink != sink.index
-                    and audio.application_name(si) not in cfg.exclude_apps
-                    and audio.sink_name_by_index(pulse, si.sink) not in cfg.exclude_sink_targets
-                ]
+            unrouted = [
+                si
+                for si in all_inputs
+                if si.sink != sink.index
+                and audio.application_name(si) not in cfg.exclude_apps
+                and audio.sink_name_by_index(si.sink) not in cfg.exclude_sink_targets
+            ]
             if unrouted:
                 print(
                     f"[AVISO] Hay {len(unrouted)} stream(s) sin enrutar al mix "
