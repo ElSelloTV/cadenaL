@@ -130,6 +130,64 @@ Viper4Linux (o `pavucontrol`/`qpwgraph`) elegi como entrada el
 en adelante el procesamiento y la salida final hacia tus parlantes la
 maneja Viper4Linux como siempre.
 
+## Procesador de aire ultra-liviano (`cadenal fx`)
+
+Alternativa a Viper4Linux para equipos modestos (pensado para PCs de 2
+nucleos corriendo una FM): una cadena de procesamiento tipo
+Breakaway/procesador de aire, pero hospedando plugins LV2 nativos en C
+dentro del propio proceso de PipeWire (sin proceso aparte, sin
+convolucion), via su modulo `filter-chain`.
+
+Cadena de senal (el limitador siempre va al final, como ultima
+barrera contra picos):
+
+```
+cadenal_mix.monitor -> AutoGanancia -> Compresor -> Brillo (EQ) -> Limitador -> cadenal_fx
+```
+
+- **AutoGanancia**: LSP Autogain
+- **Compresor**: Calf Compressor
+- **Brillo / cristalizador**: Calf Equalizer 5 Band (realce de agudos,
+  el equivalente al "HF EQ"/"Tilt" de un FM Mode de Breakaway)
+- **Limitador**: Calf Limiter
+
+### Instalacion
+
+```bash
+sudo apt install pipewire lv2-utils calf-plugins lsp-plugins-lv2
+cadenal fx check     # verifica que este todo instalado
+cadenal fx setup     # instala la cadena (opcional: --target <sink_fisico>)
+systemctl --user restart pipewire pipewire-pulse wireplumber
+cadenal fx status
+```
+
+Si no pasaste `--target`, el resultado queda expuesto como el sink
+`cadenal_fx`: elegilo a mano como salida final en `pavucontrol` o
+`qpwgraph` (por ejemplo, apuntandolo hacia tu tarjeta de sonido o hacia
+el software que alimenta el transmisor).
+
+### Afinar los parametros
+
+La cadena se instala con los valores por defecto de cada plugin (no
+son necesariamente los de tu configuracion de Breakaway). Para ajustar
+compresion, umbral, cantidad de brillo, etc. a algo similar a esa
+captura, la forma mas simple es abrir el nodo "CadenaL FX" con un host
+de plugins con interfaz grafica, por ejemplo:
+
+```bash
+sudo apt install carla
+```
+
+y desde ahi mover los controles de cada plugin (Autogain, Compressor,
+Equalizer 5 Band, Limiter) escuchando el resultado en vivo.
+
+### Quitar la cadena
+
+```bash
+cadenal fx remove
+systemctl --user restart pipewire pipewire-pulse wireplumber
+```
+
 ## Notas de diseno
 
 - El objetivo es estabilidad, no latencia: si un stream tarda un
@@ -141,3 +199,7 @@ maneja Viper4Linux como siempre.
 - Si se corta la conexion con el servidor de audio, el daemon reintenta
   la conexion con backoff creciente; `systemd` ademas lo reinicia si el
   proceso llegara a morir.
+- `cadenal fx` genera la configuracion de PipeWire pero no fue probado
+  todavia contra una instalacion real (se desarrollo sin acceso a un
+  entorno Linux). `cadenal fx check` sirve para detectar temprano si
+  falta algun paquete antes de instalar la cadena.

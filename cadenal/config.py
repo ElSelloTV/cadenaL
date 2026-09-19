@@ -3,7 +3,7 @@ import json
 import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 def _config_dir() -> Path:
@@ -27,6 +27,8 @@ class Config:
     exclude_apps: List[str] = field(default_factory=list)
     # sinks fisicos detectados en el ultimo escaneo (solo informativo)
     known_physical_sinks: List[str] = field(default_factory=list)
+    # sink fisico al que se envia la salida del procesador (fx), si se configuro
+    fx_target_sink: Optional[str] = None
 
     @classmethod
     def load(cls) -> "Config":
