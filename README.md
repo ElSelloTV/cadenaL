@@ -30,31 +30,48 @@ casos se habla el protocolo de PulseAudio.
 - Libreria `libpulse0` (normalmente ya instalada junto con el servidor
   de audio).
 - `python3-tk` si vas a usar la ventana de configuracion grafica.
+- Para el icono de bandeja (junto al reloj): `python3-gi` y
+  `gir1.2-ayatanaappindicator3-0.1` (o `gir1.2-appindicator3-0.1` en
+  distros mas viejas) para que se integre nativo con el panel. Si tu
+  escritorio no los tiene, el icono cae solo a un modo compatible por
+  X11 (necesita `python3-xlib`, que se instala solo via pip).
 
 ## Instalacion
 
 ```bash
-sudo apt install python3-pip python3-tk pipewire-pulse   # si no los tenes ya
-pip install --user .
+sudo apt install python3-pip python3-tk pipewire-pulse \
+    python3-gi gir1.2-ayatanaappindicator3-0.1   # si no los tenes ya
+pip install --user ".[tray]"
 ```
 
-Esto instala dos comandos en `~/.local/bin` (asegurate de que ese
-directorio este en tu `PATH`):
+(Si no te interesa el icono de bandeja, alcanza con `pip install --user .`)
+
+Esto instala en `~/.local/bin` (asegurate de que ese directorio este
+en tu `PATH`):
 
 - `cadenal` — CLI (`scan`, `setup`, `status`, `start`).
 - `cadenal-gui` — ventana de configuracion.
+- `cadenal-tray` — icono de bandeja junto al reloj.
 
-### Icono en el menu de aplicaciones
+### Icono en el menu de aplicaciones y en la bandeja
 
 ```bash
 ./desktop/install-desktop-entry.sh
 ```
 
-Esto copia el `.desktop` y el icono a las carpetas estandar de tu
-usuario (`~/.local/share/applications` y
-`~/.local/share/icons/hicolor/scalable/apps`). Deberia aparecer
-"cadenaL" en el menu de tu escritorio (Trinity/Plasma/lo que uses en
-Q4OS) para abrir la ventana de configuracion sin usar la terminal.
+Esto copia el `.desktop` a `~/.local/share/applications` (para que
+"cadenaL" aparezca en el menu de tu escritorio y abra la ventana de
+configuracion), el icono a
+`~/.local/share/icons/hicolor/scalable/apps`, y un autostart a
+`~/.config/autostart` para que el icono de bandeja se abra solo en
+cada inicio de sesion. Ademas lo arranca de una vez, sin esperar al
+proximo login.
+
+El icono de bandeja muestra en gris si el servicio esta detenido y en
+celeste si esta activo, y su menu contextual permite abrir la
+configuracion, ver el estado de enrutamiento, iniciar/detener el
+servicio, o salir (esto ultimo solo cierra el icono, el daemon sigue
+corriendo aparte).
 
 ## Uso
 
