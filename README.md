@@ -23,6 +23,121 @@ Funciona tanto si la maquina corre PulseAudio nativo como PipeWire con
 `pipewire-pulse` (el default actual en Debian/Q4OS), porque en ambos
 casos se habla el protocolo de PulseAudio.
 
+## Flujo completo y arquitectura (para revisar con el software de radio)
+
+Esta seccion documenta todo lo que hace cadenaL de punta a punta, para
+que el equipo/desarrollador del software de radio pueda revisar si
+necesita ajustar algo de su lado (spoiler: en el caso normal, no).
+
+### Diagrama de flujo completo
+
+```
+ Software de radio (y cualquier otra app: VLC, etc.)
+   │
+   │  cada reproduccion es un "sink-input" independiente en
+   │  PulseAudio/PipeWire, sin importar a que salida apunte
+   │  originalmente ni cuantas instancias se creen/destruyan
+   │
+   ├── Stream de MASTER (u otro no protegido)
+   │        │
+   │        ▼  cadenal.service lo detecta e intercepta
+   │        ▼  (evento "sink-input nuevo/cambiado")
+   │   cadenal_mix          <- sink virtual (module-null-sink)
+   │        │
+   │        ▼  opcional: cadenal_fx procesa el monitor de cadenal_mix
+   │   AutoGanancia -> Compresor -> Brillo (EQ) -> Limitador
+   │        │
+   │        ▼
+   │   cadenal_fx           <- sink virtual con el audio ya procesado
+   │        │
+   │        ▼  --target apunta a la salida fisica real
+   │   Salida fisica (ej. consola USB que sale al aire)
+   │
+   └── Stream de PREVIEW/CUE (si esta en un sink protegido)
+            │
+            ▼  cadenal.service lo ve pero lo IGNORA a proposito
+            ▼  (esta en la lista --exclude-sink)
+       Salida fisica separada (ej. auriculares del panel), sin tocar
+```
+
+### Como intercepta el audio (mecanismo tecnico)
+
+- cadenaL no es un plugin ni una libreria que el software de radio
+  tenga que cargar: es un **daemon en espacio de usuario** que habla
+  con el servidor de audio (PulseAudio o PipeWire vía su capa de
+  compatibilidad `pipewire-pulse`) usando el mismo protocolo que usa
+  cualquier mezclador de volumen (`pavucontrol`, etc.).
+- Se suscribe a los eventos `sink-input` (aparicion/cambio de streams
+  de reproduccion) y `sink` (aparicion/desaparicion de salidas) del
+  servidor. No hace polling ni lee/escribe audio el mismo: solo mueve
+  la referencia del stream de un sink a otro (`sink_input_move`), una
+  operacion instantanea del propio servidor de audio.
+- **Esto pasa un nivel por debajo de cualquier configuracion interna
+  del software de radio.** No importa a que "dispositivo de salida"
+  este configurado el master dentro del software: cadenaL lo
+  intercepta igual antes de que el audio llegue fisicamente a esa
+  salida, y lo redirige.
+
+### Que necesita el software de radio / sus motores de audio
+
+En el caso normal, **nada.** Para que funcione sin tocar el software
+de radio, alcanza con que sus motores de audio reproduzcan a traves
+del servidor de audio del sistema (PulseAudio o PipeWire), que es el
+camino por defecto en Linux para casi cualquier libreria de audio
+(GStreamer, libVLC, SDL, PortAudio, Wine con su backend de audio
+estandar, etc.). Puntos a confirmar con el equipo del software:
+
+1. **Que no reproduzca por ALSA directo/exclusivo.** Si el motor de
+   audio abre el hardware directamente (por ejemplo un dispositivo
+   `hw:0,0` o `plughw:0,0` en vez del `pulse`/`default` que provee el
+   servidor), ese audio nunca pasa por PulseAudio/PipeWire y cadenaL
+   no puede verlo ni interceptarlo. Esto es lo unico que realmente
+   rompe el enfoque. Si el software corre bajo Wine, revisar que el
+   backend de audio de Wine este en `pulse` (o `alsa` apuntando al
+   dispositivo virtual `pulse`/`default`, nunca a la placa directo).
+2. **No hace falta que declare ningun nombre especial de aplicacion**
+   (`application.name` en terminologia PulseAudio). cadenaL enruta por
+   defecto sin mirar el nombre del proceso; ese campo solo se usa de
+   forma opcional para excluir aplicaciones puntuales
+   (`cadenal setup --exclude <nombre>`).
+3. **No hay limite de instancias simultaneas.** Cada reproduccion que
+   dispare el software (una voz, una cortina, una pista musical) es un
+   stream independiente para el servidor de audio; cadenaL los procesa
+   a todos igual, se creen y liberen con la frecuencia que sea.
+4. **El orden de arranque no importa.** Si el software de radio ya
+   esta sonando cuando arranca `cadenal.service` (o al reves), no hay
+   problema: al iniciar, el daemon primero "barre" todo lo que ya este
+   sonando y lo re-enruta, y de ahi en mas queda escuchando eventos
+   nuevos indefinidamente.
+5. **Distincion master/previo se resuelve del lado de cadenaL, no del
+   software.** Si el software manda el previo/cue a una salida fisica
+   fija (por ejemplo siempre al mismo dispositivo de auriculares del
+   panel), alcanza con decirle a cadenaL que proteja esa salida
+   (`cadenal setup --exclude-sink <nombre_del_sink>`); no hace falta
+   ningun cambio de configuracion en el software de radio para lograr
+   esa separacion.
+6. **Formato/sample rate:** si el motor de audio reproduce en una
+   frecuencia o formato distinto al del sink virtual, el servidor de
+   audio resamplea automaticamente (es su comportamiento estandar para
+   cualquier sink); no requiere ninguna configuracion adicional.
+
+### Limitaciones conocidas (a tener en cuenta, no bloqueantes para uso en radio)
+
+- Hay una ventana minima entre que un stream nuevo aparece y cadenaL
+  lo mueve (un evento + una llamada al servidor de audio, tipicamente
+  milisegundos). En teoria el primerisimo instante de audio podria
+  sonar en la salida original antes del cambio. Para este uso (audio
+  continuo de radio) es inaudible e irrelevante; el diseño prioriza
+  estabilidad por sobre latencia cero, tal como fue pedido.
+- Si el sink virtual `cadenal_mix` se elimina manualmente o el
+  servidor de audio se reinicia de forma abrupta, cadenaL lo recrea
+  solo y re-enruta todo lo que este sonando en ese momento (ver
+  "Notas de diseno" mas abajo).
+- `cadenal fx` (el procesador AutoGanancia/Compresor/Brillo/Limitador)
+  depende de que PipeWire este compilado con soporte LV2 (lo estandar
+  en Debian/Q4OS) y de tener instalados los plugins de Calf y LSP;
+  `cadenal fx check` valida esto antes de instalar la cadena.
+
 ## Requisitos
 
 - Debian / Q4OS con PipeWire (`pipewire-pulse`) o PulseAudio.
