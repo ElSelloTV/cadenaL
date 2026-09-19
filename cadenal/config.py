@@ -27,6 +27,11 @@ class Config:
     exclude_apps: List[str] = field(default_factory=list)
     # sinks fisicos detectados en el ultimo escaneo (solo informativo)
     known_physical_sinks: List[str] = field(default_factory=list)
+    # nombres de sinks fisicos "protegidos": un stream que ya este
+    # sonando ahi (ej. el previo/cue por los auriculares del panel)
+    # se deja como esta, no se mueve al mix aunque venga del mismo
+    # software que el master.
+    exclude_sink_targets: List[str] = field(default_factory=list)
     # sink fisico al que se envia la salida del procesador (fx), si se configuro
     fx_target_sink: Optional[str] = None
 

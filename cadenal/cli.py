@@ -38,6 +38,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         cfg.description = args.description
     if args.exclude:
         cfg.exclude_apps = args.exclude
+    if args.exclude_sink:
+        cfg.exclude_sink_targets = args.exclude_sink
 
     with pulsectl.Pulse("cadenal-setup") as pulse:
         index = audio.ensure_virtual_sink(pulse, cfg.sink_name, cfg.description)
@@ -51,6 +53,14 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         f"\nEn Viper4Linux (u otro procesador) usa como entrada el monitor "
         f"de '{cfg.sink_name}' (aparece como '{cfg.sink_name}.monitor')."
     )
+    if cfg.exclude_sink_targets:
+        print(f"\nSinks protegidos (no se tocan): {', '.join(cfg.exclude_sink_targets)}")
+    else:
+        print(
+            "\nSi tenes una salida aparte para preview/cue (ej. auriculares del "
+            "panel) que NO queres que se mezcle con el master, agregala con:\n"
+            "  cadenal setup --exclude-sink <nombre_del_sink>"
+        )
     return 0
 
 
@@ -195,6 +205,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--exclude",
         nargs="*",
         help="Nombres de aplicaciones (application.name) a NO enrutar",
+    )
+    sp_setup.add_argument(
+        "--exclude-sink",
+        nargs="*",
+        help=(
+            "Nombres de sinks fisicos 'protegidos': un stream que ya este "
+            "sonando ahi no se mueve (ej. la salida de auriculares del "
+            "panel usada para el previo/cue)"
+        ),
     )
     sp_setup.set_defaults(func=_cmd_setup)
 

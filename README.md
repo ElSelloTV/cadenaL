@@ -105,6 +105,24 @@ Por linea de comandos es el mismo flujo:
    cadenal setup --exclude "GNOME Shell"
    ```
 
+   Si ademas tenes una salida fisica separada para preview/cue (por
+   ejemplo unos parlantes o auriculares conectados al panel frontal,
+   usados para escuchar el "previo" del software antes de salir al
+   aire) que **no** queres que se mezcle con el master, protegela con
+   `--exclude-sink` usando el nombre que te dio `cadenal scan`:
+
+   ```bash
+   cadenal setup \
+     --exclude-sink alsa_output.pci-0000_00_1f.3.analog-stereo
+   ```
+
+   Esto es necesario porque el master y el previo suelen salir del
+   mismo programa (mismo `application.name`): la unica forma de
+   distinguirlos es por a que salida fisica apunta cada uno. Un stream
+   que ya este sonando en un sink protegido se deja intacto; todo lo
+   demas (tipicamente el master, que apunta a tu consola USB) se
+   enruta igual que siempre hacia `cadenal_mix`.
+
 3. Instalar y habilitar el servicio para que quede corriendo siempre
    (incluso si PulseAudio/PipeWire se reinicia):
 
@@ -159,6 +177,14 @@ cadenal fx check     # verifica que este todo instalado
 cadenal fx setup     # instala la cadena (opcional: --target <sink_fisico>)
 systemctl --user restart pipewire pipewire-pulse wireplumber
 cadenal fx status
+```
+
+Ejemplo con una consola USB como salida al aire (el caso tipico de una
+FM): el master de tu software se enruta a `cadenal_mix`, se procesa, y
+`--target` manda el resultado de vuelta a la misma interfaz USB:
+
+```bash
+cadenal fx setup --target alsa_output.usb-XXXX.analog-stereo
 ```
 
 Si no pasaste `--target`, el resultado queda expuesto como el sink

@@ -53,6 +53,13 @@ def find_sink_by_name(pulse: pulsectl.Pulse, name: str):
     return None
 
 
+def sink_name_by_index(pulse: pulsectl.Pulse, index: int) -> Optional[str]:
+    try:
+        return pulse.sink_info(index).name
+    except pulsectl.PulseIndexError:
+        return None
+
+
 def ensure_virtual_sink(pulse: pulsectl.Pulse, name: str, description: str) -> int:
     """Crea (si no existe) el sink nulo virtual y devuelve su indice."""
     existing = find_sink_by_name(pulse, name)

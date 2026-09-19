@@ -30,16 +30,22 @@ class CadenalDaemon:
         self.config = config
         self.target_index: int | None = None
 
-    def _should_ignore(self, sink_input) -> bool:
+    def _should_ignore(self, pulse: pulsectl.Pulse, sink_input) -> bool:
         name = audio.application_name(sink_input)
-        return name in self.config.exclude_apps
+        if name in self.config.exclude_apps:
+            return True
+        if self.config.exclude_sink_targets:
+            current_sink_name = audio.sink_name_by_index(pulse, sink_input.sink)
+            if current_sink_name in self.config.exclude_sink_targets:
+                return True
+        return False
 
     def _sweep_existing(self, pulse: pulsectl.Pulse) -> None:
         """Al arrancar (o reconectar), mueve todo lo que ya esta sonando."""
         for si in pulse.sink_input_list():
             if si.sink == self.target_index:
                 continue
-            if self._should_ignore(si):
+            if self._should_ignore(pulse, si):
                 continue
             audio.move_sink_input(pulse, si.index, self.target_index)
 
@@ -62,7 +68,7 @@ class CadenalDaemon:
             return
         if si.sink == self.target_index:
             return
-        if self._should_ignore(si):
+        if self._should_ignore(pulse, si):
             return
 
         audio.move_sink_input(pulse, si.index, self.target_index)
