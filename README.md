@@ -12,8 +12,8 @@ limitador) y entrega el resultado al codificador estéreo.
 PC de radio (automatización) ──┐
 Micrófonos ─────────────────────┼──> Mix USB Silicon (consola/mezcladora)
                                  │
-                                 ▼
-                    Entrada de esta PC (interfaz USB MVSilicon)
+                                 ▼  salida balanceada XLR
+                    Entrada Line-In de esta PC (Realtek ALC662, analógica)
                                  │
                                  ▼
                  ┌───────────────────────────────┐
@@ -29,6 +29,14 @@ Micrófonos ─────────────────────┼�
                        Codificador estéreo → Transmisor
 ```
 
+**Entrada y salida NO usan el mismo dispositivo de audio:** la entrada
+es la Line-In analógica de la placa (Realtek ALC662) porque es el único
+puerto de línea "de verdad" que tiene esta PC; la MVSilicon USB se
+reserva para la salida hacia el codificador, donde su DAC rinde mejor
+que el de la placa. Ver "Nivel de entrada" más abajo — es el punto más
+importante para no arruinar el audio antes de que llegue a cualquier
+plugin.
+
 Esta PC es un eslabón puramente de procesamiento: **una entrada, una
 salida**, sin mezcla ni ruteo dinámico de múltiples streams (eso ya lo
 resuelve la consola física aguas arriba). Por eso no necesita nada del
@@ -42,13 +50,40 @@ fijo, liviano y que sobreviva reinicios sin intervención.
 | Placa | ASRock AM1B-M (socket AM1) |
 | CPU | AMD Sempron 2650 (APU Radeon R3) — 2 núcleos, 1 hilo c/u, 800–1450 MHz |
 | RAM | ~3.3 GB usables |
-| Audio integrado | Realtek ALC662 (analógico, **sin usar**) |
-| Audio real | USB MV-SILICON MVSilicon (entrada y salida) |
+| Audio integrado | Realtek ALC662 (analógico) — **entrada** (Line-In) |
+| Audio USB | MV-SILICON MVSilicon — **salida** hacia el codificador |
 | SO actual | Debian 13 "trixie", PipeWire 1.4.2 |
 
 Es una CPU floja (Jaguar de bajo clock, sin SMT). El diseño de abajo está
 pensado explícitamente para no pedirle más de lo que puede dar de forma
 sostenida, 24/7, sin nadie mirando.
+
+## Nivel de entrada: XLR balanceado → Line-In (el punto crítico)
+
+La salida XLR de la consola es nivel de línea **profesional** (+4 dBu,
+~1,23 V RMS nominal, con picos más altos). La Line-In de la Realtek
+ALC662 espera nivel de línea de **consumo** (-10 dBV, ~0,32 V RMS). La
+diferencia es de **~12 dB**: conectado directo, la entrada va a clipear
+antes de llegar a cualquier plugin, y eso no lo arregla ningún software
+de acá — hay que resolverlo en el tramo analógico. Opciones, de más a
+menos recomendable:
+
+1. **Trim en la consola**: si la salida XLR tiene un atenuador/trim,
+   bajarlo hasta que el pico, visto con `alsamixer` (barra de captura)
+   o `arecord -f S16_LE -d 5 test.wav && sox test.wav -n stat` ronde
+   -10/-6 dBFS. Cero hardware extra.
+2. **Cable/adaptador XLR→TRS con pad resistivo** (atenuador pasivo,
+   ~10-15 dB): si la consola no tiene trim, es la solución más barata
+   y no depende de tocar nada del lado de la consola.
+3. **Interfaz USB chica con entrada de línea balanceada real y trim**
+   (Behringer UCA202/222, Focusrite Scarlett Solo, etc.): la opción más
+   robusta si esto va a quedar operativo de forma permanente — resuelve
+   el nivel de raíz y de paso reemplaza el ADC mediocre de la ALC662.
+   No agrega carga de CPU relevante.
+
+Sin uno de estos tres pasos, cualquier ajuste de compresor/EQ que hagas
+después va a estar compensando un clipping que ya ocurrió en el
+conversor A/D, y eso es irreversible.
 
 ## Decisiones y por qué
 
@@ -133,6 +168,15 @@ adentro del archivo).
 Objetivo: que ante un corte de luz o un reinicio, la máquina vuelva a
 procesar audio sola, sin que nadie tenga que loguearse.
 
+0. **BIOS — arrancar solo al volver la luz (esto es lo primero, y es
+   ajeno al sistema operativo)**: entrar al BIOS de la ASRock AM1B-M
+   (Supr/Del al bootear) → **Advanced → Chipset Configuration** → buscar
+   **"Restore on AC/Power Loss"** y ponerlo en **"Power On"** (no
+   "Power Off" ni "Last State": con "Power On" arranca siempre que
+   vuelve la corriente, sin importar en qué estado quedó antes del
+   corte). Guardar y salir (F10). Sin este paso, todo lo demás de esta
+   sección no sirve: la máquina se queda apagada hasta que alguien
+   presione el botón físico.
 1. **Sin entorno gráfico**: `systemctl set-default multi-user.target`
    (bootea a consola de texto, no a login gráfico).
 2. **PipeWire como servicio de usuario con "linger"**: PipeWire corre
@@ -167,44 +211,84 @@ procesar audio sola, sin que nadie tenga que loguearse.
 
 ## Instalación
 
+### Paso previo (una sola vez, con monitor y teclado)
+
+El instalador de Debian necesita pantalla la primera vez. Instalar
+**Debian 13 "trixie"** con el netinst, y en la pantalla de `tasksel`
+tildar **solo "SSH server"** — desmarcar "Debian desktop environment" y
+todo lo demás. Terminada la instalación, con red y SSH funcionando, ya
+no hace falta monitor ni teclado nunca más: todo lo que sigue se hace
+por SSH.
+
+Si la máquina ya tiene Debian 13 instalado con escritorio (como el
+enunciado del hardware sugiere), no hace falta reinstalar: alcanza con
+`sudo systemctl set-default multi-user.target` y desinstalar/deshabilitar
+el display manager (`sudo systemctl disable --now gdm3` o el que tenga).
+
+### Instalador
+
 ```bash
 sudo ./install.sh
 ```
 
-Instala los paquetes necesarios, copia las configuraciones de
-`config/` a su lugar, habilita los servicios, fija el governor de CPU y
-deja logueado qué falta ajustar a mano (nombres reales de dispositivo
-ALSA, que dependen de tu MVSilicon).
+Instala los paquetes necesarios (sin entorno gráfico, todo por línea de
+comandos: `alsa-utils`, `pipewire`, `wireplumber`, plugins Calf/LSP),
+copia las configuraciones de `config/` a su lugar, habilita los
+servicios, fija el governor de CPU y deja logueado qué falta ajustar a
+mano (nombres reales de dispositivo, que dependen de tu hardware).
+Todo esto — igual que el resto de esta guía — se corre por SSH, sin
+necesidad de ventana.
 
 Después de correrlo:
 
-1. Identificar el nombre exacto de la interfaz USB:
+1. Identificar los nombres exactos de entrada (Realtek Line-In) y
+   salida (MVSilicon):
 
    ```bash
-   pw-cli ls Node | grep -i -A5 -i mvsilicon
-   # o, más simple:
    wpctl status
    ```
 
-2. Editar `/etc/pipewire/pipewire.conf.d/99-filter-chain-fm.conf` (ya
-   copiado por `install.sh`) y completar `capture.props` / `playback.props`
-   con el `node.name` real que aparece en `wpctl status` para la
-   MVSilicon (entrada y salida).
-
-3. Fijar esa interfaz como dispositivo por defecto (si no queda solo):
+2. Confirmar con `alsamixer` que el puerto activo de captura de la
+   Realtek es **"Line"** y no "Mic" (el mic-in tiene una etapa de
+   preamplificación pensada para milivoltios, no para nivel de línea —
+   si el capture source queda en "Mic" vas a clipear seguro, aunque ya
+   hayas resuelto el nivel del lado de la consola):
 
    ```bash
-   wpctl status                 # anotar el ID del sink/source MVSilicon
+   alsamixer
+   # F4 = vista de captura. Con las flechas elegir el dispositivo
+   # Realtek (F6 para elegir tarjeta si hay mas de una). Confirmar que
+   # la fuente de captura marcada con "*"/roja sea "Line", no "Mic".
+   # Ajustar el nivel de captura (barra) sin que pegue en el tope.
+   ```
+
+   Guardar el estado del mixer para que sobreviva al reinicio (Debian
+   ya lo restaura solo en el boot vía `alsa-state.service`, pero hay
+   que grabarlo una vez después de ajustar):
+
+   ```bash
+   sudo alsactl store
+   ```
+
+3. Editar `/etc/pipewire/pipewire.conf.d/99-filter-chain-fm.conf` (ya
+   copiado por `install.sh`) y completar `capture.props` (Realtek
+   Line-In) / `playback.props` (MVSilicon) con los `node.target` reales
+   del paso 1.
+
+4. Fijar ambos dispositivos como default si no quedan solos:
+
+   ```bash
+   wpctl status                 # anotar los IDs
    wpctl set-default <ID>
    ```
 
-4. Reiniciar PipeWire para aplicar la cadena:
+5. Reiniciar PipeWire para aplicar la cadena:
 
    ```bash
    systemctl --user restart pipewire wireplumber
    ```
 
-5. Verificar que no hay xruns bajo carga real (dejarlo un rato con
+6. Verificar que no hay xruns bajo carga real (dejarlo un rato con
    audio sonando):
 
    ```bash
@@ -215,19 +299,46 @@ Después de correrlo:
    señal de que el `quantum` (buffer) elegido es muy chico para este
    CPU — subirlo en `pipewire.conf.d` (ver comentarios en el archivo).
 
-## Afinar niveles (compresión, EQ, ancho estéreo)
+## Afinar niveles (compresión, EQ, ancho estéreo) — sin entorno gráfico
 
-Igual que antes: conectar una vez con un host de plugins gráfico —
+Todo se ajusta editando números en `99-filter-chain-fm.conf` por SSH
+(`nano` alcanza) y reiniciando el servicio; no hace falta ninguna
+ventana. El único paso es saber el nombre exacto (`symbol`) de cada
+control, que puede variar levemente entre versiones de los plugins:
 
 ```bash
-sudo apt install carla
+lv2info http://calf.sourceforge.net/plugins/Compressor
+lv2info http://calf.sourceforge.net/plugins/Equalizer5Band
+lv2info http://calf.sourceforge.net/plugins/StereoTools
+lv2info http://calf.sourceforge.net/plugins/Limiter
+lv2info http://lsp-plug.in/plugins/lv2/autogain_stereo
 ```
 
-y mover los controles del nodo "CadenaL FM" escuchando el resultado.
-Una vez conforme, guardar los valores en el propio archivo de config
-(`filter-chain-fm.conf`, sección `Filter-chain -> filters -> control`)
-para que sobrevivan al próximo reinicio — no dependas de un ajuste en
-vivo que se pierde al reiniciar el proceso de PipeWire.
+Cada uno lista sus "ports" de control con `symbol`, rango y valor por
+defecto. Con esos nombres se completa el bloque `control = { ... }` de
+cada nodo en `filter-chain-fm.conf`, por ejemplo:
+
+```
+control = {
+    threshold = -18.0
+    ratio     = 4.0
+    attack    = 5.0
+    release   = 80.0
+    makeup    = 3.0
+}
+```
+
+Después de cada cambio: `systemctl --user restart pipewire wireplumber`
+y escuchar el resultado (en la salida real hacia el codificador, o con
+un monitor conectado momentáneamente a algún sink de prueba). Si un
+`symbol` no coincide exactamente con el que espera el plugin instalado,
+PipeWire no levanta la cadena — revisar `journalctl --user -u pipewire`
+para ver el error puntual.
+
+**Importante para `Calf StereoTools`**: no subir el ensanchamiento
+(`width` o el símbolo equivalente que muestre `lv2info`) a ciegas — un
+valor alto genera problemas de fase al sumar L+R, crítico en FM. Subir
+de a poco y verificar la suma mono.
 
 ## Monitoreo y diagnóstico
 

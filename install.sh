@@ -30,10 +30,10 @@ apt update
 apt install -y \
     pipewire pipewire-audio-client-libraries pipewire-alsa \
     wireplumber \
+    alsa-utils \
     lv2-utils calf-plugins lsp-plugins-lv2 \
     rtkit \
-    linux-cpupower \
-    carla
+    linux-cpupower
 
 # --- 2. Sin entorno grafico / arranque headless -----------------------------
 echo
@@ -73,27 +73,37 @@ cat <<EOF
 
 === Instalacion base completa ===
 
-Falta lo que depende de TU hardware especifico (la interfaz MVSilicon):
+IMPORTANTE - revisar primero en el BIOS (ASRock AM1B-M):
+  Advanced -> Chipset Configuration -> "Restore on AC/Power Loss" = "Power On"
+  Sin esto la maquina no vuelve a arrancar sola tras un corte de luz.
 
-  1) Identificar el nombre real de entrada/salida de la MVSilicon:
+Falta lo que depende de TU hardware especifico:
+
+  1) Identificar el nombre real de la ENTRADA (Line-In de la Realtek)
+     y la SALIDA (MVSilicon):
        wpctl status
 
-  2) Editar /etc/pipewire/pipewire.conf.d/99-filter-chain-fm.conf y
-     completar los dos placeholders (capture.props / playback.props)
-     con esos nombres.
+  2) Confirmar con alsamixer que la fuente de captura de la Realtek
+     esta en "Line" (F4, F6 para elegir tarjeta) y no en "Mic", y
+     ajustar el nivel de captura sin que pegue en el tope. Guardar:
+       sudo alsactl store
 
-  3) Fijar la MVSilicon como dispositivo por defecto si no queda sola:
+  3) Editar /etc/pipewire/pipewire.conf.d/99-filter-chain-fm.conf y
+     completar los dos placeholders (capture.props = Realtek Line-In,
+     playback.props = MVSilicon) con esos nombres.
+
+  4) Fijar ambos dispositivos como default si no quedan solos:
        wpctl set-default <ID_de_wpctl_status>
 
-  4) Reiniciar PipeWire para aplicar la cadena:
+  5) Reiniciar PipeWire para aplicar la cadena:
        systemctl --user restart pipewire wireplumber
 
-  5) Verificar que no hay xruns con audio real sonando:
+  6) Verificar que no hay xruns con audio real sonando:
        pw-top
 
-  6) Afinar compresion/EQ/ancho estereo con Carla (ya instalado), y
-     volcar los valores definitivos al propio archivo de config (ver
-     seccion "Afinar niveles" del README) para que sobrevivan al
-     proximo reinicio.
+  7) Afinar compresion/EQ/ancho estereo editando los control{} del
+     propio archivo de config (ver seccion "Afinar niveles" del
+     README, usa "lv2info <uri>" para los nombres exactos de cada
+     parametro) para que los valores sobrevivan al proximo reinicio.
 
 EOF
