@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=cadenaL (icono de bandeja)
-Comment=Icono de estado de cadenaL junto al reloj
-Exec=cadenal-tray
-Icon=cadenal
-Terminal=false
-NoDisplay=true
-X-GNOME-Autostart-enabled=true

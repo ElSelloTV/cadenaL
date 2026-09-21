@@ -1,96 +1,99 @@
 #!/bin/sh
-# Instalacion completa de cadenaL en Debian/Q4OS: paquetes del sistema
-# (incluyendo los del procesador fx), la app en si, el servicio
-# systemd, y los iconos de menu/bandeja.
+# cadenaL — instalador para la PC procesadora dedicada (Debian 13 trixie).
 #
-# Lo unico que queda afuera son los pasos que dependen de TU hardware
-# especifico (nombres de tus salidas de audio), que se muestran al
-# final para que los corras vos.
+# Instala PipeWire + plugins LV2 (Calf, LSP), copia la configuracion de
+# config/ a su lugar, deja la maquina bootenado headless (sin escritorio,
+# governor de CPU en "performance") y habilita todo para que arranque
+# solo tras un reinicio/corte de luz, sin que nadie tenga que loguearse.
+#
+# Correr como root (sudo ./install.sh). Al final indica los pasos que
+# dependen de TU hardware (nombres reales de la interfaz MVSilicon).
 set -e
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Este script necesita permisos de root (correlo con sudo)." >&2
+    exit 1
+fi
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "=== cadenaL: instalacion completa ==="
+# El usuario que corre PipeWire --user. Por defecto el que invoco sudo;
+# se puede forzar con: sudo AUDIO_USER=radio ./install.sh
+AUDIO_USER="${AUDIO_USER:-${SUDO_USER:-$(logname 2>/dev/null || echo root)}}"
+
+echo "=== cadenaL: instalacion (usuario de audio: $AUDIO_USER) ==="
 
 # --- 1. Paquetes del sistema -------------------------------------------------
 echo
 echo "--- Paso 1/5: paquetes del sistema (apt) ---"
+apt update
+apt install -y \
+    pipewire pipewire-audio-client-libraries pipewire-alsa \
+    wireplumber \
+    lv2-utils calf-plugins lsp-plugins-lv2 \
+    rtkit \
+    linux-cpupower \
+    carla
 
-BASE_PACKAGES="python3-pip python3-tk pipewire pipewire-pulse python3-gi"
-FX_PACKAGES="lv2-utils calf-plugins lsp-plugins-lv2"
-
-APPINDICATOR_PKG=""
-if apt-cache show gir1.2-ayatanaappindicator3-0.1 >/dev/null 2>&1; then
-  APPINDICATOR_PKG="gir1.2-ayatanaappindicator3-0.1"
-elif apt-cache show gir1.2-appindicator3-0.1 >/dev/null 2>&1; then
-  APPINDICATOR_PKG="gir1.2-appindicator3-0.1"
-else
-  echo "Aviso: no se encontro un paquete de appindicator3 disponible en tus repos."
-  echo "El icono de bandeja va a caer al modo compatible por X11 (usa python3-xlib,"
-  echo "que se instala solo via pip mas abajo)."
-fi
-
-sudo apt update
-sudo apt install -y $BASE_PACKAGES $FX_PACKAGES $APPINDICATOR_PKG
-
-# --- 2. Instalar cadenaL (Python) -------------------------------------------
+# --- 2. Sin entorno grafico / arranque headless -----------------------------
 echo
-echo "--- Paso 2/5: instalando cadenaL (pip --user) ---"
-pip install --user "${DIR}[tray]"
+echo "--- Paso 2/5: arranque headless (multi-user.target) ---"
+systemctl set-default multi-user.target
 
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) ;;
-  *) export PATH="$HOME/.local/bin:$PATH" ;;
-esac
-
-# --- 3. Servicio systemd --user ---------------------------------------------
+# --- 3. Copiar configuracion -------------------------------------------------
 echo
-echo "--- Paso 3/5: servicio systemd --user ---"
-mkdir -p "$HOME/.config/systemd/user"
-cp "$DIR/systemd/cadenal.service" "$HOME/.config/systemd/user/cadenal.service"
-systemctl --user daemon-reload
-systemctl --user enable cadenal.service
+echo "--- Paso 3/5: copiando configuracion ---"
+mkdir -p /etc/pipewire/pipewire.conf.d
+cp "$DIR/config/pipewire/98-quantum-fm.conf" /etc/pipewire/pipewire.conf.d/
+cp "$DIR/config/pipewire/99-filter-chain-fm.conf" /etc/pipewire/pipewire.conf.d/
 
-# --- 4. Icono de menu y de bandeja -------------------------------------------
+cp "$DIR/config/limits.d/audio.conf" /etc/security/limits.d/audio.conf
+sed -i "s/@radio/@${AUDIO_USER}/g" /etc/security/limits.d/audio.conf
+
+cp "$DIR/config/systemd/cpu-performance.service" /etc/systemd/system/
+
+# --- 4. Habilitar servicios --------------------------------------------------
 echo
-echo "--- Paso 4/5: icono de menu y de bandeja ---"
-"$DIR/desktop/install-desktop-entry.sh"
+echo "--- Paso 4/5: habilitando servicios ---"
+systemctl daemon-reload
+systemctl enable --now cpu-performance.service
 
-# --- 5. Verificar plugins del procesador (fx) --------------------------------
+loginctl enable-linger "$AUDIO_USER"
+runuser -l "$AUDIO_USER" -c 'systemctl --user daemon-reload'
+runuser -l "$AUDIO_USER" -c 'systemctl --user enable --now pipewire.socket pipewire wireplumber'
+
+# --- 5. Apagar servicios innecesarios ----------------------------------------
 echo
-echo "--- Paso 5/5: verificando plugins del procesador (fx) ---"
-if command -v cadenal >/dev/null 2>&1; then
-  cadenal fx check || true
-else
-  echo "Aviso: 'cadenal' no se encontro en el PATH de esta sesion de shell."
-  echo "Abri una terminal nueva, o corre: export PATH=\"\$HOME/.local/bin:\$PATH\""
-fi
+echo "--- Paso 5/5: apagando servicios que no hacen falta en una maquina dedicada ---"
+for svc in bluetooth cups cups-browsed avahi-daemon ModemManager ; do
+    systemctl disable --now "$svc" >/dev/null 2>&1 || true
+done
 
-cat <<'EOF'
+cat <<EOF
 
 === Instalacion base completa ===
 
-Lo que sigue depende de TU hardware especifico (que salidas de audio
-tenes conectadas), asi que no se puede automatizar a ciegas:
+Falta lo que depende de TU hardware especifico (la interfaz MVSilicon):
 
-  1) Escanear tus salidas fisicas:
-       cadenal scan
+  1) Identificar el nombre real de entrada/salida de la MVSilicon:
+       wpctl status
 
-  2) Configurar el sink virtual. Si tenes una salida separada para
-     preview/cue (ej. auriculares del panel) que no debe mezclarse
-     con el master, protegela con --exclude-sink:
-       cadenal setup --exclude-sink <nombre_salida_previo>
+  2) Editar /etc/pipewire/pipewire.conf.d/99-filter-chain-fm.conf y
+     completar los dos placeholders (capture.props / playback.props)
+     con esos nombres.
 
-  3) Arrancar el enrutador:
-       systemctl --user start cadenal.service
+  3) Fijar la MVSilicon como dispositivo por defecto si no queda sola:
+       wpctl set-default <ID_de_wpctl_status>
 
-  4) Instalar la cadena de procesamiento, apuntando a tu salida real
-     (ej. la consola USB que sale al aire):
-       cadenal fx setup --target <nombre_salida_usb>
-       systemctl --user restart pipewire pipewire-pulse wireplumber
+  4) Reiniciar PipeWire para aplicar la cadena:
+       systemctl --user restart pipewire wireplumber
 
-  5) Verificar todo:
-       cadenal status
-       cadenal fx status
+  5) Verificar que no hay xruns con audio real sonando:
+       pw-top
+
+  6) Afinar compresion/EQ/ancho estereo con Carla (ya instalado), y
+     volcar los valores definitivos al propio archivo de config (ver
+     seccion "Afinar niveles" del README) para que sobrevivan al
+     proximo reinicio.
 
 EOF

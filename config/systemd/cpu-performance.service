@@ -1,0 +1,14 @@
+[Unit]
+Description=cadenaL - fijar el governor de CPU en performance
+# Evita que el escalado de frecuencia (800-1450MHz en el Sempron 2650)
+# meta latencia justo cuando entra carga de audio; causa comun de xruns
+# en CPUs debiles corriendo procesamiento de audio en tiempo real.
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/cpupower frequency-set -g performance
+
+[Install]
+WantedBy=multi-user.target
